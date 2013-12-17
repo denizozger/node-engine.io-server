@@ -1,0 +1,27 @@
+{
+  "name": "node-engine.io-server",
+  "author": "Deniz Ozger <denizozger@gmail.com>",
+  "subdomain": "node-engine.io-server",
+  "version": "0.0.1",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/denizozger/node-engine.io-server.git"
+  },
+  "dependencies": {
+    "express": "~3.4.7",
+    "engine.io": "~0.7.12",
+    "npmlog": "0.0.6",
+    "async": "~0.2.9",
+    "zmq": "~2.5.1",
+    "strong-agent": "~0.2.19",
+    "memwatch": "~0.2.2",
+    "engine.io-client": "~0.7.12"
+  },
+  "engines": {
+    "node": "0.10.x",
+    "npm": "1.2.x"
+  },
+  "scripts": {
+    "start": "node --harmony server.js"
+  }
+}
