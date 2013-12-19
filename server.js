@@ -25,7 +25,7 @@ server.listen(port, function(){
 });
 
 /**
- * Infrastructure and security settings
+ * Infrastructure settings and data models
  */
 const fetcherAddress = process.env.FETCHER_ADDRESS;
 var resourceData = {}; // key = resourceId, value = data
@@ -117,7 +117,7 @@ function notifyObservers(resourceId) {
         // We need to find the index ourselves, see https://github.com/caolan/async/issues/144
         // Discussion: When a resource terminates, and all observers disconnect but
           // currentResourceObservers will still be full.
-        var indexOfTheObserver = getTheIndexOfTheObserver(currentResourceObservers, thisObserver);
+        var indexOfTheObserver = getIndexOfTheObserver(currentResourceObservers, thisObserver);
 
         unobserveResource(currentResourceObservers, resourceId, indexOfTheObserver);
       }
@@ -126,11 +126,11 @@ function notifyObservers(resourceId) {
       log.error('Cant broadcast resource data to watching observer:', err);  
     });        
   } else {
-    log.info('No observers watching this resource: ' + resourceId);
+    log.verbose('No observers watching this resource: ' + resourceId);
   }
 }
 
-function getTheIndexOfTheObserver(observersWatchingThisResource, observerToFind) {
+function getIndexOfTheObserver(observersWatchingThisResource, observerToFind) {
   for (var i = 0; i < observersWatchingThisResource.length; i++) {
     var observer = observersWatchingThisResource[i];
 
