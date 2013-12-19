@@ -26,14 +26,8 @@
 
     socket.on('open', function () {
       socket.on('message', function (data) {
-        var li = document.createElement('li');
-
-        console.log(data);
-        console.log(JSON.stringify(data));        
-
-        li.innerHTML = JSON.stringify(data);
-
-        document.querySelector('#events').appendChild(li);
+        var li = document.getElementById('event');
+        li.innerHTML = 'Updated: ' + Date() + ':</br>' + JSON.stringify(data);
       });
     });
   </script>
@@ -43,5 +37,6 @@
   <body>
     <h1>Node Websocket Server</h1>
     <ul id='events'></ul>
+      <li id='event'></li>
   </body>
 </html>

@@ -6,9 +6,9 @@ const express = require('express'),
     io = require('engine.io').attach(server),
     log = require('npmlog'),
     zmq = require('zmq'),
-    async = require('async'),
-    strongloop = require('strong-agent').profile(),
-    memwatch = require('memwatch');
+    async = require('async');
+    // strongloop = require('strong-agent').profile(),
+    // memwatch = require('memwatch');
 
 log.level = process.env.LOGGING_LEVEL || 'verbose';
 
@@ -41,7 +41,7 @@ io.on('connection', function (socket) {
 
 function handleClientConnected(clientConnection) {
   if (!isValidConnection(clientConnection)) {
-    clientConnection.disconnect();
+    clientConnection.close();
   }
 
   var resourceId = getResourceId(clientConnection);
@@ -115,7 +115,7 @@ function notifyObservers(resourceId) {
         sendResourceDataToObserver(thisObserver, data);
       } else {
         // We need to find the index ourselves, see https://github.com/caolan/async/issues/144
-        // Discussion: When a resource terminates, and all observers disconnect, 
+        // Discussion: When a resource terminates, and all observers disconnect but
           // currentResourceObservers will still be full.
         var indexOfTheObserver = getTheIndexOfTheObserver(currentResourceObservers, thisObserver);
 
@@ -126,7 +126,7 @@ function notifyObservers(resourceId) {
       log.error('Cant broadcast resource data to watching observer:', err);  
     });        
   } else {
-    log.info('No observers watching this resource: ', resourceId);
+    log.info('No observers watching this resource: ' + resourceId);
   }
 }
 
@@ -175,15 +175,15 @@ function isValidConnection(clientConnection) {
 /**
  * Monitoring
  */
- memwatch.on('leak', function(info) {
-  log.error('Memory Leak detected:');
-  log.error(JSON.stringify(info, null, 2));
-  // process.exit(1);
-});
+//  memwatch.on('leak', function(info) {
+//   log.error('Possible memory leak: (ignore this when load testing)');
+//   log.error(JSON.stringify(info, null, 2));
+//   // process.exit(1);
+// });
 
-memwatch.on('stats', function(stats) {
-  log.warn('GC usage trend:', stats.usage_trend);
-});
+// memwatch.on('stats', function(stats) {
+//   log.warn('GC usage trend:', stats.usage_trend);
+// });
 
 function closeAllConnections() {
   resourceRequiredPusher.close();
@@ -208,25 +208,7 @@ process.on('SIGINT', function() {
 
 function logNewObserver(clientConnection, resourceId) {
   log.info('New connection for ' + resourceId + '. This resource\'s observers: ' + 
-    resourceObservers[resourceId].length + ', Total observers : ' + io.clientsCount);
-}
-
-function censor(censor) {
-  return (function() {
-    var i = 0;
-
-    return function(key, value) {
-      if(i !== 0 && typeof(censor) === 'object' && typeof(value) == 'object' && censor == value) 
-        return '[Circular]'; 
-
-      if(i >= 29) // seems to be a harded maximum of 30 serialized objects?
-        return '[Unknown]';
-
-      ++i; // so we know we aren't using the original object anymore
-
-      return value;  
-    }
-  })(censor);
+    resourceObservers[resourceId].length + ', Total observers : ', io.clientsCount);
 }
 
 function logRemovedObserver() {
