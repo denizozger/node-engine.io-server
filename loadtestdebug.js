@@ -3,13 +3,15 @@ var log = require('npmlog');
 log.level = 'verbose';
 
 var sockets = [];
-var maxSockets = 1000; // max 210?
+var maxSockets = 5; // max 210?
 var connectionAttempts = 0;
 
-//process.env.DEBUG = '*';  
+process.env.DEBUG = '*';  
 
 function connectToWebSocket() {
   connectionAttempts++;
+
+  log.info('*************************************************************');
 
   log.info('Connection attempt ' + connectionAttempts);
 
@@ -30,17 +32,17 @@ function connectToWebSocket() {
       log.error(JSON.stringify(e, censor(e), 4));
     };
     
-   // if (connectionAttempts < maxSockets) {
-   //   setTimeout(connectToWebSocket, 1);
-   // }
+   if (connectionAttempts < maxSockets) {
+     setTimeout(connectToWebSocket, 100);
+   }
 
   };
 
   sockets.push(socket);
 
-  if (connectionAttempts < maxSockets) {
-    setTimeout(connectToWebSocket, 1000);
-  }
+  // if (connectionAttempts < maxSockets) {
+  //   setTimeout(connectToWebSocket, 100);
+  // }
 };
 
 function censor(censor) {

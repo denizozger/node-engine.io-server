@@ -1,231 +1,306 @@
 'use strict';
 
-const express = require('express'),
-    app = express(),
-    server = require('http').createServer(app),
-    io = require('engine.io').attach(server),
-    log = require('npmlog'),
-    zmq = require('zmq'),
-    async = require('async');
-    // strongloop = require('strong-agent').profile();
-    // memwatch = require('memwatch');
+const 
+  zmq = require('zmq'),
+  cluster = require('cluster'),
+  log = require('npmlog');
 
 log.level = process.env.LOGGING_LEVEL || 'verbose';
 
-app.use(express.static(__dirname + '/'));
-
-app.get('/', function(req, res, next){
-  res.sendfile('index.html');
-});
-
-const port = process.env.PORT || 5000;
-
-server.listen(port, function(){
-  log.info('Web socket server (' + process.pid + ') is listening on ', port);
-});
-
 /**
- * Infrastructure settings and data models
+ * Master process
  */ 
-const fetcherAddress = process.env.FETCHER_ADDRESS;
-var resourceData = {}; // key = resourceId, value = data
-var resourceObservers = {}; // key = resourceId, value = [connection1, conn2, ..]
+if (cluster.isMaster) {
 
-/**
- * Public Endpoints
- */
- 
-io.on('connection', function (socket) {
-  handleClientConnected(socket);
-});
+  const express = require('express'),
+    app = express(),
+    server = require('http').createServer(app),
+    io = require('engine.io').attach(server),
+    async = require('async'),
+    redis = require("redis"),
+    redisClient = redis.createClient();
+    // strongloop = require('strong-agent').profile();
 
-function handleClientConnected(clientConnection) {
-  if (!isValidConnection(clientConnection)) {
-    clientConnection.close();
+  log.info('Master ' + process.pid +' is online.');
+
+  redisClient.on("error", function (err) {
+    log.error("Redis error: " + err);
+  });
+
+  app.use(express.static(__dirname + '/'));
+
+  app.get('/', function(req, res, next){
+    res.sendfile('index.html');
+  });
+
+  const port = process.env.PORT || 5000;
+
+  server.listen(port, function(){
+    log.info('Web socket server (' + process.pid + ') is listening on ', port);
+  });
+
+  /**
+   * Infrastructure settings and data models
+   */ 
+  const fetcherAddress = process.env.FETCHER_ADDRESS;
+  const totalWorkerCount = require('os').cpus().length;
+
+  var resourceData = {}; // key = resourceId, value = data
+  var resourceObservers = {}; // key = resourceId, value = [connection1, conn2, ..]
+
+  /**
+   * Public Endpoints
+   */
+   
+  io.on('connection', function (socket) {
+    handleClientConnected(socket);
+  });
+
+  function handleClientConnected(clientConnection) {
+    if (!isValidConnection(clientConnection)) {
+      clientConnection.close();
+    }
+
+    var resourceId = getResourceId(clientConnection);
+    observeResource(clientConnection, resourceId);
+
+    var existingResourceData = resourceData[resourceId];
+
+    if (existingResourceData) {
+      sendResourceDataToObserver(clientConnection, existingResourceData);
+    } else {
+      requestResource(resourceId);
+    }
   }
 
-  var resourceId = getResourceId(clientConnection);
-  observeResource(clientConnection, resourceId);
+  function observeResource(clientConnection, resourceId) {
+    var currentResourceObservers = resourceObservers[resourceId] || [];
+   
+     currentResourceObservers.push(clientConnection);
+     resourceObservers[resourceId] = currentResourceObservers;
 
-  var existingResourceData = resourceData[resourceId];
-
-  if (existingResourceData) {
-    sendResourceDataToObserver(clientConnection, existingResourceData);
-  } else {
-    requestResource(resourceId);
+     logNewObserver(clientConnection, resourceId);
   }
-}
 
-function observeResource(clientConnection, resourceId) {
-  var currentResourceObservers = resourceObservers[resourceId] || [];
- 
-   currentResourceObservers.push(clientConnection);
-   resourceObservers[resourceId] = currentResourceObservers;
+  // Publish a resource request for a resrouce that we don't have in memory (ie. in resourceData)
+  const resourceRequiredPusher = zmq.socket('push').bind('tcp://*:5432');
+  // Receive new resource data
+  const resourceUpdatedPuller = zmq.socket('pull').connect('tcp://localhost:5433');
 
-   logNewObserver(clientConnection, resourceId);
-}
+  resourceUpdatedPuller.on('message', function (data) {
+    handleResourceDataReceived(data);
+  });
 
-// Publish a resource request for a resrouce that we don't have in memory (ie. in resourceData)
-const resourceRequiredPusher = zmq.socket('push').bind('tcp://*:5432');
-// Receive new resource data
-const resourceUpdatedPuller = zmq.socket('pull').connect('tcp://localhost:5433');
+  function handleResourceDataReceived(data) {
+    var resource = JSON.parse(data); 
+    log.verbose('Received resource data for resource ' + resource.id);
 
-resourceUpdatedPuller.on('message', function (data) {
-  handleResourceDataReceived(data);
-});
+    storeResourceData(resource);
 
-function handleResourceDataReceived(data) {
-  var resource = JSON.parse(data); 
-  log.verbose('Received resource data for resource ' + resource.id);
+    notifyObservers(resource.id);
+  }
 
-  storeResourceData(resource);
+  const notifyJobPusher = zmq.socket('push').bind('ipc://notify-job-pusher.ipc', socketErrorHandler);
 
-  notifyObservers(resource.id);
-}
+  function sendResourceDataToObserver(clientConnection, resourceData) {
+    clientConnection.send(resourceData);
+  }
 
-/**
- * Implementation of public endpoints
- */
+  function requestResource(resourceId) {
+    log.verbose('Requested resource (id: ' + resourceId + ') does not exist, sending a resource request');
 
-function sendResourceDataToObserver(clientConnection, resourceData) {
-  clientConnection.send(resourceData);
-}
+    resourceRequiredPusher.send(JSON.stringify({id: resourceId}));
+  }
 
-function requestResource(resourceId) {
-  log.verbose('Requested resource (id: ' + resourceId + ') does not exist, sending a resource request');
+  function storeResourceData(resource)  {
+    resourceData[resource.id] = resource.data;
 
-  resourceRequiredPusher.send(JSON.stringify({id: resourceId}));
-}
+    logAllResources();
+  }
 
-function storeResourceData(resource) {
-  resourceData[resource.id] = resource.data;
+  function notifyObservers(resourceId) {
+    resourceFetchJobPusher.send(resourceId); 
 
-  logAllResources();
-}
+    log.silly('Notification job sent for resource ' + resourceId);
+  }
 
-function notifyObservers(resourceId) {
-  var currentResourceObservers = resourceObservers[resourceId];
+  function getResourceId(clientConnection) {
+    return clientConnection.request.query.resourceId;
+  }
+
+  function isValidConnection(clientConnection) {
+    var resourceId = getResourceId(clientConnection);
+
+    if (!resourceId) {
+      log.warn('Bad resource id (' + resourceId + ') is requested, closing the socket connection');
+      return false;
+    }
+
+    return true;
+  }
+
+
+  /**
+   * Forking worker processes
+   */
   
-  var data = resourceData[resourceId];
+  for (let i = 0; i < totalWorkerCount; i++) {
+    cluster.fork();  
+  }
 
-  if (currentResourceObservers) {
-    async.forEach(currentResourceObservers, function(thisObserver){
+  // Listen for workers to come online
+  cluster.on('online', function(worker) {
+    log.info('Worker ' + worker.process.pid + ' is online.');
+  });
 
-      if (thisObserver.readyState !== 'closed') {
-        sendResourceDataToObserver(thisObserver, data);
-      } else {
-        // We need to find the index ourselves, see https://github.com/caolan/async/issues/144
-        // Discussion: When a resource terminates, and all observers disconnect but
-          // currentResourceObservers will still be full.
-        var indexOfTheObserver = getIndexOfTheObserver(currentResourceObservers, thisObserver);
+  // Handle dead workers
+  cluster.on('exit', function(worker, code, signal) {
+    log.warn('Worker ' + worker.process.pid + ' died with code ' + code + '. Forking a new one..');
+    this.fork();
+  });
 
-        unobserveResource(currentResourceObservers, resourceId, indexOfTheObserver);
+  /**
+   * Disconnecting gracefully
+   */
+  function closeAllSockets() {
+    resourceRequiredPusher.close();
+    resourceUpdatedPuller.close(); 
+    notifyJobPusher.close();
+    io.close();
+  }
+
+  process.on('uncaughtException', function (err) {
+    log.error('Master process failed, gracefully closing connections: ' + err.stack);    
+    closeAllSockets();
+    process.exit(1);
+  }); 
+
+  process.on('SIGINT', function() {
+    closeAllSockets();
+    process.exit();
+  });
+
+  /**
+   * Logging
+   */
+
+  function logNewObserver(clientConnection, resourceId) {
+    log.info('New connection for ' + resourceId + '. This resource\'s observers: ' + 
+      resourceObservers[resourceId].length + ', Total observers : ', io.clientsCount);
+  }
+
+  function logAllResources() {
+    log.silly('Total resources in memory: ' + Object.keys(resourceData).length);
+    // log.silly(JSON.stringify(resourceData, null, 4));
+  }
+
+} else {
+
+  /**
+   * Worker process
+   */
+
+  const notifyJobPuller = zmq.socket('pull').bind('ipc://notify-job-pusher.ipc', socketErrorHandler);
+
+  notifyJobPuller.on('message', function (message) {
+    handleNewNotifyJob(message);
+  });
+
+  function handleNewNotifyJob(resourceId) {
+    log.silly('Worker ' + process.pid + ' received a fetch job for resource ' + fetchJob.id);
+
+    var observers = resourceObservers[resourceId];
+    var data = resourceData[resourceId];
+
+    notifyObservers(observers, data);
+  }
+
+  function notifyObservers(observers, data) {
+    if (observers) {
+      async.forEach(currentResourceObservers, function(thisObserver){
+
+        if (thisObserver.readyState !== 'closed') {
+          sendResourceDataToObserver(thisObserver, data);
+        } else {
+          // We need to find the index ourselves, see https://github.com/caolan/async/issues/144
+          // Discussion: When a resource terminates, and all observers disconnect but
+            // observers will still be full.
+          var indexOfTheObserver = getIndexOfTheObserver(observers, thisObserver);
+
+          unobserveResource(observers, resourceId, indexOfTheObserver);
+        }
+      },
+      function(err){
+        log.error('Cant broadcast resource data to watching observer:', err);  
+      });        
+    } else {
+      log.verbose('No observers watching this resource: ' + resourceId);
+    }
+  }  
+
+  function getIndexOfTheObserver(observersWatchingThisResource, observerToFind) {
+    for (var i = 0; i < observersWatchingThisResource.length; i++) {
+      var observer = observersWatchingThisResource[i];
+
+      if (observer === observerToFind) {
+        return i;
       }
-    },
-    function(err){
-      log.error('Cant broadcast resource data to watching observer:', err);  
-    });        
-  } else {
-    log.verbose('No observers watching this resource: ' + resourceId);
-  }
-}
-
-function getIndexOfTheObserver(observersWatchingThisResource, observerToFind) {
-  for (var i = 0; i < observersWatchingThisResource.length; i++) {
-    var observer = observersWatchingThisResource[i];
-
-    if (observer === observerToFind) {
-      return i;
     }
   }
-}
 
-function unobserveResource(observersWatchingThisResource, resourceId, indexOfTheObserver) {
-  observersWatchingThisResource.splice(indexOfTheObserver, 1);
+  function unobserveResource(observersWatchingThisResource, resourceId, indexOfTheObserver) {
+    observersWatchingThisResource.splice(indexOfTheObserver, 1);
 
-  if (observersWatchingThisResource.length === 0) { 
-    removeResource(resourceId);
-  } 
+    if (observersWatchingThisResource.length === 0) { 
+      removeResource(resourceId);
+    } 
 
-  logRemovedObserver();
-}
-
-function removeResource(resourceId) {
-  log.verbose('Removing resource ( ' + resourceId + ') from memory');
-
-  delete resourceObservers[resourceId];
-  delete resourceData[resourceId];   
-}
-
-function getResourceId(clientConnection) {
-  return clientConnection.request.query.resourceId;
-}
-
-function isValidConnection(clientConnection) {
-  var resourceId = getResourceId(clientConnection);
-
-  if (!resourceId) {
-    log.warn('Bad resource id (' + resourceId + ') is requested, closing the socket connection');
-    return false;
+    logRemovedObserver();
   }
 
-  return true;
-}
+  function removeResource(resourceId) {
+    log.verbose('Removing resource ( ' + resourceId + ') from memory');
 
-/**
- * Monitoring
- */
-//  memwatch.on('leak', function(info) {
-//   log.error('Possible memory leak: (ignore this when load testing)');
-//   log.error(JSON.stringify(info, null, 2));
-//   // process.exit(1);
-// });
+    delete resourceObservers[resourceId];
+    delete resourceData[resourceId];   
+  }
 
-// memwatch.on('stats', function(stats) {
-//   log.warn('GC usage trend:', stats.usage_trend);
-// });
+  function logRemovedObserver() {
+    log.verbose('Connection closed. Total connections: ', io.clientsCount);
+    logResourceObservers();
+  }
 
-function closeAllConnections() {
-  resourceRequiredPusher.close();
-  resourceUpdatedPuller.close(); 
-  io.close();
-}
-
-process.on('uncaughtException', function (err) {
-  log.error('Caught exception: ' + err.stack);    
-  closeAllConnections();
-  process.exit(1);
-}); 
-
-process.on('SIGINT', function() {
-  closeAllConnections();
-  process.exit();
-});
-
-/**
- * Logging
- */
-
-function logNewObserver(clientConnection, resourceId) {
-  log.info('New connection for ' + resourceId + '. This resource\'s observers: ' + 
-    resourceObservers[resourceId].length + ', Total observers : ', io.clientsCount);
-}
-
-function logRemovedObserver() {
-  log.verbose('Connection closed. Total connections: ', io.clientsCount);
-  logResourceObservers();
-}
-
-function logResourceObservers() {
-  for (var resourceId in resourceObservers) {
-    if (resourceObservers.hasOwnProperty(resourceId)) {
-      log.verbose(resourceObservers[resourceId].length + ' observers are watching ' + resourceId );
+  function logResourceObservers() {
+    for (var resourceId in resourceObservers) {
+      if (resourceObservers.hasOwnProperty(resourceId)) {
+        log.verbose(resourceObservers[resourceId].length + ' observers are watching ' + resourceId );
+      }
     }
   }
-}
 
-function logAllResources() {
-  log.silly('Total resources in memory: ' + Object.keys(resourceData).length);
-  // log.silly(JSON.stringify(resourceData, null, 4));
-}
+  /**
+   * Disconnecting gracefully
+   */ 
+  function closeAllSockets() {
+    notifyJobPuller.close();
+  }
 
+  process.on('uncaughtException', function (err) {
+    log.error('Worker ' + process.pid + ' got an error, the job it was working on is lost: ' + err.stack);    
+    closeAllSockets();
+    process.exit(1);
+  }); 
+
+  process.on('SIGINT', function() {
+    closeAllSockets();
+    process.exit();
+  });
+
+ }
+
+var socketErrorHandler = function (err) {
+  if (err) {
+    log.error('Socket connection error: ' + err.stack);
+    throw new Error(err);
+  }
+};
