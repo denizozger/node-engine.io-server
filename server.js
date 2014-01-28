@@ -45,12 +45,23 @@ function handleClientConnected(connectedClient) {
   sendCurrentResourceDataToObserver(connectedClient, resourceId);
 }
 
-function sendCurrentResourceDataToObserver(connectedClient, resourceId) {
+function observeResource(connectedClient, resourceId) {
+  var observerRedisClient = redis.createClient();
+  observerRedisClient.subscribe(resourceId, redis.print);
 
+  observerRedisClient.on('message', function(channel, message) {
+      connectedClient.send(message);
+  });
+
+  logNewObserver(resourceId);
+}
+
+function sendCurrentResourceDataToObserver(connectedClient, resourceId) {
+  // A promise here is not really needed but I like experimenting
   Q.ninvoke(redisClient, 'get', resourceId)
     .then(function(resourceData) {
 
-      if (resourceData != null) {
+      if (resourceData) {
         connectedClient.send(resourceData);  
       } else {
         requestResource(resourceId);
@@ -63,18 +74,7 @@ function sendCurrentResourceDataToObserver(connectedClient, resourceId) {
     .done();
 }
 
-function observeResource(connectedClient, resourceId) {
-  var observerRedisClient = redis.createClient();
-  observerRedisClient.subscribe(resourceId, redis.print);
-
-  observerRedisClient.on('message', function(channel, message) {
-      connectedClient.send(message);
-  });
-
-  logNewObserver(connectedClient, resourceId);
-}
-
-// Publish a resource request for a resrouce that we don't have in memory (ie. in resourceData)
+// Publish a resource request for a resrouce that we don't have in Redis
 const resourceRequiredPusher = zmq.socket('push').bind('tcp://*:5432');
 // Receive new resource data
 const resourceUpdatedPuller = zmq.socket('pull').connect('tcp://localhost:5433');
@@ -129,7 +129,7 @@ function isValidConnection(clientConnection) {
  * Logging
  */
 
-function logNewObserver(clientConnection, resourceId) {
+function logNewObserver(resourceId) {
   log.info('New connection for ' + resourceId + '. Total observers : ', io.clientsCount);
 }
 
