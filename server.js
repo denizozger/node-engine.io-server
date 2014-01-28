@@ -4,12 +4,15 @@ const express = require('express'),
     app = express(),
     server = require('http').createServer(app),
     io = require('engine.io').attach(server),
-    log = require('npmlog'),
     zmq = require('zmq'),
-    async = require('async');
+    redis = require('redis'),
+    redisClient = redis.createClient(),
+    Q = require('q'),
+    log = require('npmlog');
     // strongloop = require('strong-agent').profile();
 
 log.level = process.env.LOGGING_LEVEL || 'verbose';
+redis.print = process.env.REDIS_DEBUG ? redis.print : null;
 
 app.use(express.static(__dirname + '/'));
 
@@ -24,12 +27,6 @@ server.listen(port, function(){
 });
 
 /**
- * Infrastructure settings and data models
- */ 
-var resourceData = {}; // key = resourceId, value = data
-var resourceObservers = {}; // key = resourceId, value = [connection1, conn2, ..]
-
-/**
  * Public Endpoints
  */
  
@@ -37,30 +34,44 @@ io.on('connection', function (socket) {
   handleClientConnected(socket);
 });
 
-function handleClientConnected(clientConnection) {
-  if (!isValidConnection(clientConnection)) {
-    clientConnection.close();
+function handleClientConnected(connectedClient) {
+  if (!isValidConnection(connectedClient)) {
+    connectedClient.close();
   }
 
-  var resourceId = getResourceId(clientConnection);
-  observeResource(clientConnection, resourceId);
+  var resourceId = getResourceId(connectedClient);
+  observeResource(connectedClient, resourceId);
 
-  var existingResourceData = resourceData[resourceId];
-
-  if (existingResourceData) {
-    sendResourceDataToObserver(clientConnection, existingResourceData);
-  } else {
-    requestResource(resourceId);
-  }
+  sendCurrentResourceDataToObserver(connectedClient, resourceId);
 }
 
-function observeResource(clientConnection, resourceId) {
-  var currentResourceObservers = resourceObservers[resourceId] || [];
- 
-   currentResourceObservers.push(clientConnection);
-   resourceObservers[resourceId] = currentResourceObservers;
+function sendCurrentResourceDataToObserver(connectedClient, resourceId) {
 
-   logNewObserver(clientConnection, resourceId);
+  Q.ninvoke(redisClient, 'get', resourceId)
+    .then(function(resourceData) {
+
+      if (resourceData != null) {
+        connectedClient.send(resourceData);  
+      } else {
+        requestResource(resourceId);
+      }
+    })
+    .catch(function (err) {
+      log.error('Cant send current resource data to observer ' +
+        'for resource ' + resourceId + ':' + err.stack);
+    })
+    .done();
+}
+
+function observeResource(connectedClient, resourceId) {
+  var observerRedisClient = redis.createClient();
+  observerRedisClient.subscribe(resourceId, redis.print);
+
+  observerRedisClient.on('message', function(channel, message) {
+      connectedClient.send(message);
+  });
+
+  logNewObserver(connectedClient, resourceId);
 }
 
 // Publish a resource request for a resrouce that we don't have in memory (ie. in resourceData)
@@ -76,18 +87,14 @@ function handleResourceDataReceived(data) {
   var resource = JSON.parse(data); 
   log.verbose('Received resource data for resource ' + resource.id);
 
-  storeResourceData(resource);
+  saveResourceData(resource);
 
-  notifyObservers(resource.id);
+  notifyObservers(resource);
 }
 
 /**
  * Implementation of public endpoints
  */
-
-function sendResourceDataToObserver(clientConnection, resourceData) {
-  clientConnection.send(resourceData);
-}
 
 function requestResource(resourceId) {
   log.verbose('Requested resource (id: ' + resourceId + ') does not exist, sending a resource request');
@@ -95,64 +102,12 @@ function requestResource(resourceId) {
   resourceRequiredPusher.send(JSON.stringify({id: resourceId}));
 }
 
-function storeResourceData(resource) {
-  resourceData[resource.id] = resource.data;
-
-  logAllResources();
+function saveResourceData(resource) {
+  redisClient.set(resource.id, resource.data, redis.print);
 }
 
-function notifyObservers(resourceId) {
-  var currentResourceObservers = resourceObservers[resourceId];
-  
-  var data = resourceData[resourceId];
-
-  if (currentResourceObservers) {
-    async.forEach(currentResourceObservers, function(thisObserver){
-
-      if (thisObserver.readyState !== 'closed') {
-        sendResourceDataToObserver(thisObserver, data);
-      } else {
-        // We need to find the index ourselves, see https://github.com/caolan/async/issues/144
-        // Discussion: When a resource terminates, and all observers disconnect but
-          // currentResourceObservers will still be full.
-        var indexOfTheObserver = getIndexOfTheObserver(currentResourceObservers, thisObserver);
-
-        unobserveResource(currentResourceObservers, resourceId, indexOfTheObserver);
-      }
-    },
-    function(err){
-      log.error('Cant broadcast resource data to watching observer:', err);  
-    });        
-  } else {
-    log.verbose('No observers watching this resource: ' + resourceId);
-  }
-}
-
-function getIndexOfTheObserver(observersWatchingThisResource, observerToFind) {
-  for (var i = 0; i < observersWatchingThisResource.length; i++) {
-    var observer = observersWatchingThisResource[i];
-
-    if (observer === observerToFind) {
-      return i;
-    }
-  }
-}
-
-function unobserveResource(observersWatchingThisResource, resourceId, indexOfTheObserver) {
-  observersWatchingThisResource.splice(indexOfTheObserver, 1);
-
-  if (observersWatchingThisResource.length === 0) { 
-    removeResource(resourceId);
-  } 
-
-  logRemovedObserver();
-}
-
-function removeResource(resourceId) {
-  log.verbose('Removing resource ( ' + resourceId + ') from memory');
-
-  delete resourceObservers[resourceId];
-  delete resourceData[resourceId];   
+function notifyObservers(resource) {
+  redisClient.publish(resource.id, resource.data);
 }
 
 function getResourceId(clientConnection) {
@@ -170,6 +125,17 @@ function isValidConnection(clientConnection) {
   return true;
 }
 
+/**
+ * Logging
+ */
+
+function logNewObserver(clientConnection, resourceId) {
+  log.info('New connection for ' + resourceId + '. Total observers : ', io.clientsCount);
+}
+
+/**
+ * Graceful termination
+ */
 function closeAllConnections() {
   resourceRequiredPusher.close();
   resourceUpdatedPuller.close(); 
@@ -186,30 +152,3 @@ process.on('SIGINT', function() {
   closeAllConnections();
   process.exit();
 });
-
-/**
- * Logging
- */
-
-function logNewObserver(clientConnection, resourceId) {
-  log.info('New connection for ' + resourceId + '. This resource\'s observers: ' + 
-    resourceObservers[resourceId].length + ', Total observers : ', io.clientsCount);
-}
-
-function logRemovedObserver() {
-  log.verbose('Connection closed. Total connections: ', io.clientsCount);
-  logResourceObservers();
-}
-
-function logResourceObservers() {
-  for (var resourceId in resourceObservers) {
-    if (resourceObservers.hasOwnProperty(resourceId)) {
-      log.verbose(resourceObservers[resourceId].length + ' observers are watching ' + resourceId );
-    }
-  }
-}
-
-function logAllResources() {
-  log.silly('Total resources in memory: ' + Object.keys(resourceData).length);
-  // log.silly(JSON.stringify(resourceData, null, 4));
-}

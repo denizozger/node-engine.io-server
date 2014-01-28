@@ -11,11 +11,8 @@
     "express": "~3.4.7",
     "engine.io": "~0.7.12",
     "npmlog": "0.0.6",
-    "async": "~0.2.9",
     "zmq": "~2.5.1",
     "strong-agent": "~0.2.19",
-    "memwatch": "~0.2.2",
-    "engine.io-client": "~0.7.12",
     "redis": "~0.10.0",
     "q": "~1.0.0"
   },
