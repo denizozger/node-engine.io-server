@@ -1,17 +1,18 @@
 'use strict';
 
 const express = require('express'),
-    app = express(),
-    server = require('http').createServer(app),
-    io = require('engine.io').attach(server),
-    zmq = require('zmq'),
-    redis = require('redis'),
-    redisClient = redis.createClient(),
-    Q = require('q'),
-    log = require('npmlog');
-    // strongloop = require('strong-agent').profile();
+  app = express(),
+  server = require('http').createServer(app),
+  io = require('engine.io').attach(server),
+  zmq = require('zmq'),
+  redis = require('redis'),
+  redisClient = redis.createClient(),
+  Q = require('q'),
+  log = require('npmlog');
+  // strongloop = require('strong-agent').profile();
 
 log.level = process.env.LOGGING_LEVEL || 'verbose';
+
 redis.print = process.env.REDIS_DEBUG ? redis.print : null;
 
 app.use(express.static(__dirname + '/'));
@@ -23,7 +24,7 @@ app.get('/', function(req, res, next){
 const port = process.env.PORT || 5000;
 
 server.listen(port, function(){
-  log.info('Web socket server (' + process.pid + ') is listening on ', port);
+  log.info('Web socket server (Worker ' + process.pid + ') is listening on ', port);
 });
 
 /**
@@ -52,19 +53,24 @@ function handleClientConnected(connectedClient) {
   sendCurrentResourceDataToObserver(connectedClient, resourceId);
 }
 
-function observeResource(connectedClient, resourceId) {
-  var subscriber = resourceSubscribers[resourceId];
+// Receive new resource data
+const resourceUpdatedSubscriber = zmq.socket('sub').connect('tcp://localhost:5433');
 
-  if (!subscriber) {
+function observeResource(connectedClient, resourceId) {
+  var redisClientSubscriber = resourceSubscribers[resourceId];
+
+  if (!redisClientSubscriber) {
     log.silly('Creating a new Redis client for resource ' + resourceId);
 
-    subscriber = redis.createClient();
-    resourceSubscribers[resourceId] = subscriber;
+    redisClientSubscriber = redis.createClient();
+    resourceSubscribers[resourceId] = redisClientSubscriber;
+
+    resourceUpdatedSubscriber.subscribe(resourceId);
   }
 
-  subscriber.subscribe(resourceId, redis.print);
+  redisClientSubscriber.subscribe(resourceId, redis.print);
 
-  subscriber.on('message', function(channel, message) {
+  redisClientSubscriber.on('message', function(channel, message) {
       connectedClient.send(message);
   });
 
@@ -90,22 +96,21 @@ function sendCurrentResourceDataToObserver(connectedClient, resourceId) {
     .done();
 }
 
-// Publish a resource request for a resrouce that we don't have in Redis
+// Publish a resource request for a resource that we don't have in Redis
 const resourceRequiredPusher = zmq.socket('push').bind('tcp://*:5432');
-// Receive new resource data
-const resourceUpdatedPuller = zmq.socket('pull').connect('tcp://localhost:5433');
 
-resourceUpdatedPuller.on('message', function (data) {
+resourceUpdatedSubscriber.on('message', function (data) {
   handleResourceDataReceived(data);
 });
 
 function handleResourceDataReceived(data) {
-  var resource = JSON.parse(data); 
+  var resource = JSON.parse(getJSONFromPublisherMessage(data)); 
+
   log.verbose('Received resource data for resource ' + resource.id);
 
   saveResourceData(resource);
 
-  notifyObservers(resource);
+  notifyObservers(resource); 
 }
 
 /**
@@ -141,6 +146,15 @@ function isValidConnection(clientConnection) {
   return true;
 }
 
+// Publisher messages are in format 'channnel message', in our case 'resourceId {resourceData}'
+function getJSONFromPublisherMessage(message) {
+  var messageAsString = String(message);
+
+  var indexOfJSON = messageAsString.indexOf('{');
+
+  return messageAsString.substring(indexOfJSON, message.length);
+}
+
 /**
  * Logging
  */
@@ -154,7 +168,7 @@ function logNewObserver(resourceId) {
  */
 function closeAllConnections() {
   resourceRequiredPusher.close();
-  resourceUpdatedPuller.close(); 
+  resourceUpdatedSubscriber.close(); 
   io.close();
 }
 
@@ -165,6 +179,7 @@ process.on('uncaughtException', function (err) {
 }); 
 
 process.on('SIGINT', function() {
+  log.warn('SIGINT detected, exiting gracefully.');
   closeAllConnections();
   process.exit();
 });
