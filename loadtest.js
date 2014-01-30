@@ -18,7 +18,7 @@ const connectionDelay = 2000 * totalWorkerCount;
  * Master process
  */ 
 if (cluster.isMaster) {
-  log.info('Master ' + process.pid +' is online. Total sockets to create will be ' + maxSockets);
+  log.info('Master ' + process.pid +' is online. Total sockets to create will be ' + maxSockets * totalWorkerCount);
 
   for (let i = 1; i <= totalWorkerCount; i++) {
     log.info('Forking worker ' + i + ' out of ' + totalWorkerCount);
