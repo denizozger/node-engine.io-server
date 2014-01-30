@@ -53,8 +53,6 @@ function handleClientConnected(connectedClient) {
 }
 
 function observeResource(connectedClient, resourceId) {
-  console.log('resourceSubscribers length: ' + Object.size(resourceSubscribers))
-
   var subscriber = resourceSubscribers[resourceId];
 
   if (!subscriber) {
@@ -70,6 +68,7 @@ function observeResource(connectedClient, resourceId) {
       connectedClient.send(message);
   });
 
+  log.silly('Redis clients in memory: ' + Object.size(resourceSubscribers))
   logNewObserver(resourceId);
 }
 
