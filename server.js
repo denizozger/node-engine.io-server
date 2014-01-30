@@ -27,6 +27,13 @@ server.listen(port, function(){
 });
 
 /**
+ * Data structures
+ */
+
+ // These are (currently) redis clients subscribed to different channels
+ var resourceSubscribers = {};
+
+/**
  * Public Endpoints
  */
  
@@ -46,10 +53,20 @@ function handleClientConnected(connectedClient) {
 }
 
 function observeResource(connectedClient, resourceId) {
-  var observerRedisClient = redis.createClient();
-  observerRedisClient.subscribe(resourceId, redis.print);
+  console.log('resourceSubscribers length: ' + Object.size(resourceSubscribers))
 
-  observerRedisClient.on('message', function(channel, message) {
+  var subscriber = resourceSubscribers[resourceId];
+
+  if (!subscriber) {
+    log.silly('Creating a new Redis client for resource ' + resourceId);
+
+    subscriber = redis.createClient();
+    resourceSubscribers[resourceId] = subscriber;
+  }
+
+  subscriber.subscribe(resourceId, redis.print);
+
+  subscriber.on('message', function(channel, message) {
       connectedClient.send(message);
   });
 
@@ -152,3 +169,11 @@ process.on('SIGINT', function() {
   closeAllConnections();
   process.exit();
 });
+
+Object.size = function(obj) {
+    var size = 0, key;
+    for (key in obj) {
+        if (obj.hasOwnProperty(key)) size++;
+    }
+    return size;
+};

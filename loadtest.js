@@ -13,7 +13,7 @@ function connectToWebSocket() {
 
   log.info('Connection attempt ' + connectionAttempts);
 
-	var socket = require('engine.io-client')('ws://162.13.136.160:5000/?resourceId=matchesfeed/1/matchcentre');
+	var socket = require('engine.io-client')('ws://localhost:5000/?resourceId=matchesfeed/1/matchcentre');
   socket.transports = ['websocket'];
   socket.upgrade = 'false';
 
@@ -39,7 +39,7 @@ function connectToWebSocket() {
   sockets.push(socket);
 
   if (connectionAttempts < maxSockets) {
-    setTimeout(connectToWebSocket, 1000);
+    setTimeout(connectToWebSocket, 500);
   }
 };
 
