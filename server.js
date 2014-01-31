@@ -3,7 +3,7 @@
 const express = require('express'),
   app = express(),
   http = require('http'),
-  io = require('engine.io').attach(server),
+  engine = require('engine.io'),
   zmq = require('zmq'),
   redis = require('redis'),
   redisClient = redis.createClient(),
@@ -17,7 +17,10 @@ log.level = process.env.LOGGING_LEVEL || 'verbose';
 http.globalAgent.maxSockets = Infinity;
 
 // http server
-server = http.createServer(app);
+const server = http.createServer(app);
+
+// WebSocket server
+const io = engine.attach(server);
 
 app.use(express.static(__dirname + '/'));
 
@@ -74,9 +77,15 @@ function observeResource(connectedClient, resourceId) {
 
   redisClientSubscriber.subscribe(resourceId, redis.print);
 
-  redisClientSubscriber.on('message', function(channel, message) {
-      connectedClient.send(message);
-  });
+  var sendDataToConnectedClient = function (channel, message) {
+    connectedClient.send(message);
+  };
+
+  redisClientSubscriber.addListener('message', sendDataToConnectedClient);
+
+  connectedClient.on('disconnect', function(){
+    redisClientSubscriber.removeListener('message', sendDataToConnectedClient);    
+  })
 
   log.silly('Redis clients in memory: ' + Object.size(resourceSubscribers))
   logNewObserver(resourceId);
