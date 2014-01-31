@@ -2,7 +2,7 @@
 
 const express = require('express'),
   app = express(),
-  server = require('http').createServer(app),
+  http = require('http'),
   io = require('engine.io').attach(server),
   zmq = require('zmq'),
   redis = require('redis'),
@@ -12,6 +12,12 @@ const express = require('express'),
   // strongloop = require('strong-agent').profile();
 
 log.level = process.env.LOGGING_LEVEL || 'verbose';
+
+// Set how many concurrent sockets http agent can have open per host
+http.globalAgent.maxSockets = Infinity;
+
+// http server
+server = http.createServer(app);
 
 app.use(express.static(__dirname + '/'));
 
