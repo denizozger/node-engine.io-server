@@ -7,7 +7,7 @@ const
 log.level = 'verbose';
 
 const totalWorkerCount = require('os').cpus().length;
-const maxSockets = Math.floor(16 / totalWorkerCount);
+const maxSockets = Math.floor(2500 / totalWorkerCount);
 
 // 8 workers connecting every 8 seconds makes on average 1 connection per second
 const connectionDelay = 2000 * totalWorkerCount; 
