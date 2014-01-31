@@ -13,8 +13,6 @@ const express = require('express'),
 
 log.level = process.env.LOGGING_LEVEL || 'verbose';
 
-redis.print = process.env.REDIS_DEBUG ? redis.print : null;
-
 app.use(express.static(__dirname + '/'));
 
 app.get('/', function(req, res, next){
