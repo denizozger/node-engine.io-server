@@ -15,6 +15,7 @@ log.level = process.env.LOGGING_LEVEL || 'verbose';
 
 // Set how many concurrent sockets http agent can have open per host
 http.globalAgent.maxSockets = Infinity;
+process.setMaxListeners(0);
 
 // http server
 const server = http.createServer(app);
