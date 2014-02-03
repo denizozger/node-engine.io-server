@@ -16,6 +16,8 @@ if (cluster.isMaster) {
 
   const redisClient = redis.createClient(),
     strongloop = require('strong-agent').profile();
+
+  redisClient.setMaxListeners(0);
     
   const totalWorkerCount = require('os').cpus().length;
 

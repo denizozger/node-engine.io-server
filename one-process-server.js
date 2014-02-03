@@ -16,6 +16,7 @@ log.level = process.env.LOGGING_LEVEL || 'verbose';
 // Set how many concurrent sockets http agent can have open per host
 http.globalAgent.maxSockets = Infinity;
 process.setMaxListeners(0);
+redisClient.setMaxListeners(0);
 
 // http server
 const server = http.createServer(app);
@@ -71,6 +72,7 @@ function observeResource(connectedClient, resourceId) {
     log.silly('Creating a new Redis client for resource ' + resourceId);
 
     redisClientSubscriber = redis.createClient();
+    redisClientSubscriber.setMaxListeners(0);
     resourceSubscribers[resourceId] = redisClientSubscriber;
 
     resourceUpdatedSubscriber.subscribe(resourceId);
